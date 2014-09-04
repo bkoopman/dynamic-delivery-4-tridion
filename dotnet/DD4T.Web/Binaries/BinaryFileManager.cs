@@ -116,7 +116,7 @@ namespace DD4T.Web.Binaries
         #region inner class Dimensions
         internal class Dimensions
         {
-            internal int Width; internal int Height;
+            internal int Width; internal int Height; internal bool NoDistort;
         }
         #endregion
 
@@ -169,8 +169,10 @@ namespace DD4T.Web.Binaries
 
                     byte[] buffer = binary.BinaryData;
 
-                    if (dimensions != null)
+                    if (dimensions != null && (dimensions.Width > 0 || dimensions.Height > 0))
+                    {
                         buffer = ResizeImageFile(buffer, dimensions, GetImageFormat(physicalPath));
+                    }
                     fileStream.Write(buffer, 0, buffer.Length);
                 }
             }
@@ -202,31 +204,64 @@ namespace DD4T.Web.Binaries
 
         internal static byte[] ResizeImageFile(byte[] imageFile, Dimensions dimensions, ImageFormat imageFormat)
         {
-
-            int targetH, targetW;
             Image original = Image.FromStream(new MemoryStream(imageFile));
-            if (dimensions.Width > 0 && dimensions.Height > 0 && !(dimensions.Width == original.Width && dimensions.Height == original.Height))
+
+            //Defaults for crop position, width and target size
+            int cropX = 0, cropY = 0;
+            int sourceW = original.Width, sourceH = original.Height;
+            int targetW = original.Width, targetH = original.Height;
+
+            //Most complex case is if a height AND width is specified
+            if (dimensions.Width > 0 && dimensions.Height > 0)
             {
-                targetW = dimensions.Width;
-                targetH = dimensions.Height;
+                if (dimensions.NoDistort)
+                {
+                    //If we don't want to distort, then we crop
+                    float originalAspect = (float)original.Width / (float)original.Height;
+                    float targetAspect = (float)dimensions.Width / (float)dimensions.Height;
+                    if (targetAspect < originalAspect)
+                    {
+                        //Crop the width
+                        targetH = dimensions.Height;
+                        targetW = (int)Math.Ceiling(targetH * targetAspect);
+                        cropX = (int)Math.Ceiling((original.Width - (original.Height * targetAspect)) / 2);
+                        sourceW = sourceW - 2 * cropX;
+                    }
+                    else
+                    {
+                        //Crop the height
+                        targetW = dimensions.Width;
+                        targetH = (int)Math.Ceiling(targetW / targetAspect);
+                        cropY = (int)Math.Ceiling((original.Height - (original.Width / targetAspect)) / 2);
+                        sourceH = sourceH - 2 * cropY;
+                    }
+                }
+                else
+                {
+                    //We distort
+                    targetH = dimensions.Height;
+                    targetW = dimensions.Width;
+                }
             }
-            else if (dimensions.Width > 0 && dimensions.Width != original.Width)
+            //If we simply have a certain width or height, its simple: We just use that and derive the other
+            //dimension from the original image aspect ratio. We also check if the target size is bigger than
+            //the original, and if we allow distorting.
+            else if (dimensions.Width > 0)
             {
-                targetW = dimensions.Width;
+                targetW = (dimensions.NoDistort && dimensions.Width > original.Width) ? original.Width : dimensions.Width;
                 targetH = (int)(original.Height * ((float)targetW / (float)original.Width));
-            }
-            else if (dimensions.Height > 0 && dimensions.Height != original.Height)
-            {
-                targetH = dimensions.Height;
-                targetW = (int)(original.Width * ((float)targetH / (float)original.Height));
             }
             else
             {
-                //No need to resize the image, return the original bytes.
+                targetH = (dimensions.NoDistort && dimensions.Height > original.Height) ? original.Height : dimensions.Height;
+                targetW = (int)(original.Width * ((float)targetH / (float)original.Height));
+            }
+            if (targetW == original.Width && targetH == original.Height)
+            {
+                //No resize required
                 return imageFile;
             }
-
-            Image imgPhoto = null;
+            Image imgPhoto;
             using (MemoryStream memoryStream = new MemoryStream(imageFile))
             {
                 imgPhoto = Image.FromStream(memoryStream);
@@ -244,7 +279,7 @@ namespace DD4T.Web.Binaries
             grPhoto.SmoothingMode = SmoothingMode.AntiAlias;
             grPhoto.InterpolationMode = InterpolationMode.HighQualityBicubic;
             grPhoto.PixelOffsetMode = PixelOffsetMode.HighQuality;
-            grPhoto.DrawImage(imgPhoto, new Rectangle(0, 0, targetW, targetH), 0, 0, original.Width, original.Height, GraphicsUnit.Pixel);
+            grPhoto.DrawImage(imgPhoto, new Rectangle(0, 0, targetW, targetH), cropX, cropY, sourceW, sourceH, GraphicsUnit.Pixel);
             // Save out to memory and then to a file.  We dispose of all objects to make sure the files don't stay locked.
             using (MemoryStream memoryStream = new MemoryStream())
             {
@@ -256,6 +291,7 @@ namespace DD4T.Web.Binaries
                 return memoryStream.GetBuffer();
             }
         }
+        
         private ImageFormat GetImageFormat(string path)
         {
             switch (Path.GetExtension(path).ToLower())
